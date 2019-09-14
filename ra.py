@@ -1,9 +1,12 @@
 import cv2
+import sys
+import numpy as np
 
 MIN_MATCHES = 15
 
 scene = cv2.imread('scene.jpg', 0)
 model = cv2.imread('model.jpg', 0)
+# frame = cv2.VideoCapture(0)
 
 # Initiate orb detector
 orb = cv2.ORB_create()
@@ -41,3 +44,38 @@ def drawKeypoints(figure, figure_kps):
     figure_with_kps = cv2.drawKeypoints(figure, figure, figure, color=(0,255,0), flags=0)
     cv2.imshow('Keypoints', figure_with_kps)
     cv2.waitKey(0)
+
+def findHomography(src_keypoints, dst_keypoints, matches):
+
+    # source points
+    src_pts = np.float32([
+        src_keypoints[m.queryIdx].pt for m in matches # points on source image in relation to the destination image (query image)
+    ]).reshape(-1, 1, 2)
+
+    # destination points
+    dst_points = np.float32([
+        dst_keypoints[m.trainIdx].pt for m in matches # points on the destination image in relation to the source image (train image)
+    ]).reshape(-1, 1, 2)
+
+    # compute Homography
+    M, mask = cv2.findHomography(src_pts, dst_points, cv2.RANSAC, 5.0)
+
+    return M
+
+def drawRectangle(source, src_kps, dst_kps, matches, model):
+    h, w = source.shape # height and width of the image that we are searching
+    
+    pts = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(-1, 1, 2) # reshape(rows, cols, dimension)
+
+    # get Homography
+    M = findHomography(src_kps, dst_kps, matches)
+
+    # project corners into the frame
+    dst = cv2.perspectiveTransform(pts, M)
+
+    # connect them with lines
+    img_with_lines_connected = cv2.polylines(model,[np.int32(dst)], True, 255, 3, cv2.LINE_AA)
+    cv2.imshow('Connected', img_with_lines_connected)
+    cv2.waitKey(0)
+
+drawRectangle(scene, scene_kps, model_kps, matches, model)
