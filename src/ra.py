@@ -9,7 +9,7 @@ import argparse
 
 # Minimum number of matches that have to be found
 # to consider the recognition valid
-MIN_MATCHES = 10
+MIN_MATCHES = 60
 
 # Command line argument parsing
 parser = argparse.ArgumentParser(description='Augmented Reality')
@@ -141,7 +141,7 @@ def projection_matrix(K, H):
     """
 
     # computes G = [G1 G2 G3] = K^-1 * H
-    H = H * (-1) # I don't know yet why to do this
+    H = H * (-1) # If don't change this, the obj will render on the wrong axis. E.g.: if a change the book with a rotation forward, the correct was the obj go back, but, with normal H, the object actually shows the wrong face
     G = np.dot(np.linalg.inv(K), H)
 
     col1 = G[:,0]
@@ -257,6 +257,12 @@ def run():
         # sort them in the order of their distance
         # the lower the distance, the better the match
         matches = sorted(matches, key=lambda x: x.distance)
+
+        cv2.imshow('Frame', frame)
+
+        # close
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
         # verify if enough matches are found. If yes, compute Homography
         if len(matches) > MIN_MATCHES:
