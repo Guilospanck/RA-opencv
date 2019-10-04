@@ -12,7 +12,7 @@
 ### Command line arguments
 
 * `--rectangle`, `-r`: Draws the projection of the reference surface on the video frame as a blue rectangle.
-* `--matches`, `-m`: Draws matches between reference surface and video frame.
+* `--matches`, `-ma`: Draws matches between reference surface and video frame.
 
 
 ## Troubleshooting
