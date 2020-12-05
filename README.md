@@ -6,7 +6,10 @@
 * Place the image of the surface to be tracked inside the `references` folder.
 * On line 221 of `src/ra.py` replace `'marley_source.jpg'` with the name of the image you just copied inside the `reference` folder.
 * On line 232 of `src/ra.py` replace `'fox.obj'` with the name of the model you want to render. To change the size of the rendered model change the scale parameter (number `3`) in line 189 of `src/ra.py` by a suitable number. This might require some trial and error.
-* Open a terminal session inside the project folder and run `python src/ra.py`
+* Open a terminal session inside the project folder and run:
+* `pip install opencv-python`
+* `pip install opencv-contrib-python`
+* `python3 src/ra.py`
 
 
 ### Command line arguments
