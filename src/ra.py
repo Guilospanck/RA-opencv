@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 # to consider the recognition valid
 MIN_MATCHES = 120
 # Only check for matches every some frames
-FRAME_SKIP = 2
+FRAME_SKIP = 1
 # Change this to the train image you want to find any match in the video stream
 TRAIN_IMAGE_RELATIVE_PATH = "references/software.jpg"
 # Change this to the .obj model you want to render on the matched image
@@ -24,6 +24,8 @@ OBJ_MODEL_RELATIVE_PATH = "models/fox/fox.obj"
 MTL_MODEL_RELATIVE_PATH = "models/fox/fox.mtl"
 # Change this to increase/decrease the scale of the rendered .obj
 MODEL_OBJ_SCALE = 3
+# Moving average alpha used to calculate the FPS
+MOVING_AVG_ALPHA = 0.7
 
 # Command line argument parsing
 parser = argparse.ArgumentParser(description="Augmented Reality")
@@ -37,6 +39,7 @@ parser.add_argument(
 parser.add_argument(
     "-ma", "--matches", help="Draw matches between keypoints.", action="store_true"
 )
+parser.add_argument("-fps", "--fps", help="Show FPS", action="store_true")
 
 args = parser.parse_args()
 
@@ -383,8 +386,6 @@ def run():
         source, None
     )  #  keypoints = 500 ; descriptors = 500 with 32 integer values each
 
-    frame_count = 0
-
     # Obj vertices
     vertices = np.array(obj.vertices, dtype=np.float32)
     # Texture coordinates
@@ -393,6 +394,11 @@ def run():
     scale_matrix = np.eye(3, dtype=np.float32) * MODEL_OBJ_SCALE
     # Train image dimensions
     source_h, source_w = source.shape[:2]
+
+    frame_count = 0
+
+    prev_time = time.time()
+    fps = 0
 
     while True:
         frame_count += 1
@@ -404,6 +410,27 @@ def run():
         if not ok:
             print("Cannot read video file")
             sys.exit()
+
+        if args.fps:
+            # Calculate FPS using moving average
+            # smoothedFPS = alpha * currentFPS + (1-alpha) * previousSmoothedFPS
+            current_time = time.time()
+            fps = MOVING_AVG_ALPHA * (1 / (current_time - prev_time)) + (
+                1 - MOVING_AVG_ALPHA
+            ) * (fps or 1 / (current_time - prev_time))
+            prev_time = current_time
+
+            # Add FPS text to the frame
+            cv2.putText(
+                frame,
+                f"FPS: {fps:.2f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 0, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
         # find the keypoints and descriptors of the frame
         frame_kps, frame_des = orb.detectAndCompute(frame, None)
