@@ -6,8 +6,8 @@ import math
 import os
 from objloader_simple import OBJ
 import platform
-
 import argparse
+import time
 
 # Minimum number of matches that have to be found
 # to consider the recognition valid
@@ -39,6 +39,18 @@ parser.add_argument(
 args = parser.parse_args()
 
 
+def benchmark(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        print(f"{func.__name__} execution time: {end_time - start_time:.6f} seconds")
+        return result
+
+    return wrapper
+
+
+@benchmark
 def findHomography(src_keypoints, dst_keypoints, matches):
     """
     Calculates and returns the Homography matrix between two planes: the train image plane and the query image plane.
@@ -102,6 +114,7 @@ def intrinsic_camera(fu, fv, u0, v0):
     return K
 
 
+@benchmark
 def projection_matrix(K, H):
     """
     From the camera calibration matrix (intrinsic matrix) and the estimated Homography,
@@ -204,26 +217,28 @@ def hex_to_rgb(hex_color):
     )
 
 
-def render(img, obj, projection, model):
+@benchmark
+def render(
+    *,
+    frame,
+    obj,
+    projection,
+    vertices,
+    texcoords,
+    scale_matrix,
+    source_h,
+    source_w,
+    mask,
+):
     """
     Render a Wavefront object (.obj) into the current video frame with texture mapping.
     Args:
         img: The current video frame.
-        obj: The parsed OBJ file with vertices, faces, and materials.
+        obj: The parsed OBJ file.
         projection: Projection matrix (3x4: intrinsic + extrinsic).
-        model: The reference (train) image.
     Returns:
         img: The rendered image with the object overlaid.
     """
-
-    # Obj vertices
-    vertices = np.array(obj.vertices, dtype=np.float32)
-    # Texture coordinates
-    texcoords = np.array(obj.texcoords, dtype=np.float32)
-    # Scaling matrix
-    scale_matrix = np.eye(3, dtype=np.float32) * MODEL_OBJ_SCALE
-    # Train image dimensions
-    h, w = model.shape[:2]
 
     for face, tex_ids, _, material_name in obj.faces:
         # 3D points for the current face
@@ -231,7 +246,9 @@ def render(img, obj, projection, model):
         points = np.dot(points, scale_matrix)
 
         # Center the model on the reference surface
-        points = np.array([[p[0] + w / 2, p[1] + h / 2, p[2]] for p in points])
+        points = np.array(
+            [[p[0] + source_w / 2, p[1] + source_h / 2, p[2]] for p in points]
+        )
         dst = cv2.perspectiveTransform(points.reshape(-1, 1, 3), projection)
         imgpts = np.int32(dst)
 
@@ -252,22 +269,22 @@ def render(img, obj, projection, model):
 
             # Warp the texture onto the triangular face
             warped_texture = cv2.warpAffine(
-                texture, matrix, (img.shape[1], img.shape[0])
+                texture, matrix, (frame.shape[1], frame.shape[0])
             )
 
             # Create a mask for the triangular face
-            mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+            mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
             cv2.fillConvexPoly(mask, np.int32(dst_pts), 255)
 
             # Overlay the texture onto the image
-            img = cv2.copyTo(warped_texture, mask[:, :, None], img)
+            frame = cv2.copyTo(warped_texture, mask[:, :, None], frame)
 
         else:
             # Render with solid color if no texture
             color = obj.get_material_color(material_name)
-            cv2.fillConvexPoly(img, imgpts, color=[int(c * 255) for c in color])
+            cv2.fillConvexPoly(frame, imgpts, color=[int(c * 255) for c in color])
 
-    return img
+    return frame
 
 
 def getVideoCaptureSettingBasedOnPlatform():
@@ -319,16 +336,28 @@ def run():
 
     frame_count = 0
 
+    # Obj vertices
+    vertices = np.array(obj.vertices, dtype=np.float32)
+    # Texture coordinates
+    texcoords = np.array(obj.texcoords, dtype=np.float32)
+    # Scaling matrix
+    scale_matrix = np.eye(3, dtype=np.float32) * MODEL_OBJ_SCALE
+    # Train image dimensions
+    source_h, source_w = source.shape[:2]
+    # Create a mask for the triangular face
+    # based on the frame height and width (dependent on the camera)
+    mask = np.zeros((1080, 1920), dtype=np.uint8)
+
     while True:
+        frame_count += 1
+        if frame_count % FRAME_SKIP != 0:
+            continue
+
         # read the current frame
         ok, frame = cap.read()
         if not ok:
             print("Cannot read video file")
             sys.exit()
-
-        frame_count += 1
-        if frame_count % FRAME_SKIP != 0:
-            continue
 
         # find the keypoints and descriptors of the frame
         frame_kps, frame_des = orb.detectAndCompute(frame, None)
@@ -346,6 +375,8 @@ def run():
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
+        # Show the image even if no matches are found, otherwise we can't see
+        # the video stream
         cv2.imshow("Frame", frame)
 
         # verify if enough matches are found. If yes, compute Homography
@@ -362,9 +393,19 @@ def run():
                     # obtain the projection matrix
                     P = projection_matrix(K, H)
                     # project cube or model
-                    frame = render(frame, obj, P, source)
+                    frame = render(
+                        frame=frame,
+                        obj=obj,
+                        projection=P,
+                        vertices=vertices,
+                        texcoords=texcoords,
+                        scale_matrix=scale_matrix,
+                        source_h=source_h,
+                        source_w=source_w,
+                        mask=mask,
+                    )
                 except Exception as e:
-                    # print(e)
+                    print(e)
                     pass
 
             if args.matches:
