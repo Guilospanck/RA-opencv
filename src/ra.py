@@ -39,7 +39,13 @@ parser.add_argument(
 parser.add_argument(
     "-ma", "--matches", help="Draw matches between keypoints.", action="store_true"
 )
-parser.add_argument("-fps", "--fps", help="Show FPS", action="store_true")
+parser.add_argument("-fps", "--fps", help="Show FPS.", action="store_true")
+parser.add_argument(
+    "-texture",
+    "--apply-texture",
+    help="Apply texture to rendered object.",
+    action="store_true",
+)
 
 args = parser.parse_args()
 
@@ -238,7 +244,9 @@ def preprocess_face(face_data):
     imgpts = np.int32(dst)
 
     # Get texture for the current material
-    texture = obj.mtl.materials[material_name].get("texture", None)
+    texture = None
+    if obj.mtl:
+        texture = obj.mtl.materials[material_name].get("texture", None)
 
     if texture is not None:
         # Map texture coordinates to the face
@@ -372,7 +380,9 @@ def run():
 
     # loads the 3d .obj model using the objoader_simple.py helper
     obj_filename = os.path.join(dir_name, OBJ_MODEL_RELATIVE_PATH)
-    mtl_filename = os.path.join(dir_name, MTL_MODEL_RELATIVE_PATH)
+    mtl_filename = (
+        os.path.join(dir_name, MTL_MODEL_RELATIVE_PATH) if args.apply_texture else None
+    )
     obj = OBJ(obj_filename, mtl_filename, swapyz=True)
 
     # Initiate orb detector
