@@ -8,6 +8,8 @@ from objloader_simple import OBJ
 import platform
 import argparse
 import time
+from concurrent.futures import ThreadPoolExecutor
+
 
 # Minimum number of matches that have to be found
 # to consider the recognition valid
@@ -206,15 +208,51 @@ def projection_matrix(K, H):
     return projection
 
 
-def hex_to_rgb(hex_color):
-    """
-    Helper function to convert hex strings to RGB
-    """
-    hex_color = hex_color.lstrip("#")
-    h_len = len(hex_color)
-    return tuple(
-        int(hex_color[i : i + h_len // 3], 16) for i in range(0, h_len, h_len // 3)
+def preprocess_face(face_data):
+    """Precompute transformations for a single face."""
+    (
+        face,
+        tex_ids,
+        vertices,
+        texcoords,
+        projection,
+        obj,
+        material_name,
+        scale_matrix,
+        source_h,
+        source_w,
+    ) = face_data
+
+    # 3D points for the current face
+    points = np.array([vertices[vertex] for vertex in face])
+    points = np.dot(points, scale_matrix)
+
+    # Center the model on the reference surface
+    points = np.array(
+        [[p[0] + source_w / 2, p[1] + source_h / 2, p[2]] for p in points]
     )
+    dst = cv2.perspectiveTransform(points.reshape(-1, 1, 3), projection)
+    imgpts = np.int32(dst)
+
+    # Get texture for the current material
+    texture = obj.mtl.materials[material_name].get("texture", None)
+
+    if texture is not None:
+        # Map texture coordinates to the face
+        uv = texcoords[tex_ids]
+        uv[:, 0] *= texture.shape[1]
+        uv[:, 1] *= texture.shape[0]
+
+        # Compute the affine transform matrix
+        src_pts = np.float32(uv[:3]).reshape(-1, 2)  # First 3 UV points
+        dst_pts = np.float32(imgpts[:3]).reshape(-1, 2)  # First 3 projected points
+        matrix = cv2.getAffineTransform(src_pts, dst_pts)
+
+        return {"imgpts": imgpts, "matrix": matrix, "texture": texture}
+    else:
+        # Render with solid color
+        color = obj.get_material_color(material_name)
+        return {"imgpts": imgpts, "color": [int(c * 255) for c in color]}
 
 
 @benchmark
@@ -228,61 +266,72 @@ def render(
     scale_matrix,
     source_h,
     source_w,
-    mask,
 ):
     """
     Render a Wavefront object (.obj) into the current video frame with texture mapping.
     Args:
-        img: The current video frame.
+        frame: The current video frame.
         obj: The parsed OBJ file.
         projection: Projection matrix (3x4: intrinsic + extrinsic).
+        vertices: the obj vertices in NDArray[floating[_32Bit]] format.
+        texcoords: the obj texture coordinates in NDArray[floating[_32Bit]] format.
+        scale_matrix: the matrix to be used to scale the obj model in NDArray[floating[_32Bit]] format.
+        source_h: the train image height.
+        source_w: the train image width.
     Returns:
-        img: The rendered image with the object overlaid.
+        frame: The rendered image with the object overlaid.
     """
 
-    for face, tex_ids, _, material_name in obj.faces:
-        # 3D points for the current face
-        points = np.array([vertices[vertex] for vertex in face])
-        points = np.dot(points, scale_matrix)
-
-        # Center the model on the reference surface
-        points = np.array(
-            [[p[0] + source_w / 2, p[1] + source_h / 2, p[2]] for p in points]
+    # Precompute face data for parallel processing
+    face_data_list = [
+        (
+            face,
+            tex_ids,
+            vertices,
+            texcoords,
+            projection,
+            obj,
+            material_name,
+            scale_matrix,
+            source_h,
+            source_w,
         )
-        dst = cv2.perspectiveTransform(points.reshape(-1, 1, 3), projection)
-        imgpts = np.int32(dst)
+        for face, tex_ids, _, material_name in obj.faces
+    ]
 
-        # Get texture for the current material
-        texture = obj.mtl.materials[material_name].get("texture", None)
+    # Preprocess faces in parallel
+    with ThreadPoolExecutor() as executor:
+        processed_faces = list(executor.map(preprocess_face, face_data_list))
 
-        if texture is not None:
-            # Map texture coordinates to the face
-            uv = np.array([texcoords[tex_id] for tex_id in tex_ids], dtype=np.float32)
-            uv[:, 0] *= texture.shape[1]  # Scale U to texture width
-            uv[:, 1] *= texture.shape[0]  # Scale V to texture height
+    # Combine all faces sequentially
+    for face_data in processed_faces:
+        imgpts = face_data["imgpts"]
 
-            # Compute the affine transform matrix
-            src_pts = np.float32(uv[:3]).reshape(-1, 2)  # First 3 UV points
-            dst_pts = np.float32(imgpts[:3]).reshape(-1, 2)  # First 3 projected points
+        if "texture" in face_data:
+            texture = face_data["texture"]
+            matrix = face_data["matrix"]
 
-            matrix = cv2.getAffineTransform(src_pts, dst_pts)
+            # Create a local triangular mask
+            local_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
 
-            # Warp the texture onto the triangular face
+            # Warp texture and mask
             warped_texture = cv2.warpAffine(
                 texture, matrix, (frame.shape[1], frame.shape[0])
             )
+            cv2.fillConvexPoly(local_mask, imgpts[:3], 255)
 
-            # Create a mask for the triangular face
-            mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
-            cv2.fillConvexPoly(mask, np.int32(dst_pts), 255)
-
-            # Overlay the texture onto the image
-            frame = cv2.copyTo(warped_texture, mask[:, :, None], frame)
+            # Restrict operations to bounding box
+            x, y, w, h = cv2.boundingRect(imgpts)
+            frame[y : y + h, x : x + w] = cv2.copyTo(
+                warped_texture[y : y + h, x : x + w],
+                local_mask[y : y + h, x : x + w, None],
+                frame[y : y + h, x : x + w],
+            )
 
         else:
-            # Render with solid color if no texture
-            color = obj.get_material_color(material_name)
-            cv2.fillConvexPoly(frame, imgpts, color=[int(c * 255) for c in color])
+            # Render with solid color
+            color = face_data["color"]
+            cv2.fillConvexPoly(frame, imgpts, color=color)
 
     return frame
 
@@ -344,9 +393,6 @@ def run():
     scale_matrix = np.eye(3, dtype=np.float32) * MODEL_OBJ_SCALE
     # Train image dimensions
     source_h, source_w = source.shape[:2]
-    # Create a mask for the triangular face
-    # based on the frame height and width (dependent on the camera)
-    mask = np.zeros((1080, 1920), dtype=np.uint8)
 
     while True:
         frame_count += 1
@@ -402,7 +448,6 @@ def run():
                         scale_matrix=scale_matrix,
                         source_h=source_h,
                         source_w=source_w,
-                        mask=mask,
                     )
                 except Exception as e:
                     print(e)
