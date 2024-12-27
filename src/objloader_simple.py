@@ -3,6 +3,7 @@ import cv2
 
 
 class MTL:
+
     def __init__(self, filename):
         """Parses a Wavefront MTL file."""
         self.materials = {}
@@ -39,9 +40,21 @@ class MTL:
                         self.materials[current_material]["d"] = float(values[1])
                     elif values[0] == "map_Kd":  # Diffuse texture map
                         texture_path = os.path.join(base_path, values[1])
-                        self.materials[current_material]["texture"] = cv2.imread(
-                            texture_path, cv2.IMREAD_COLOR
-                        )
+                        texture = cv2.imread(texture_path, cv2.IMREAD_COLOR)
+                        resized_texture = self.preprocess_texture(texture)
+                        self.materials[current_material]["texture"] = resized_texture
+
+    def preprocess_texture(self, texture, max_size=64):
+        """
+        Resize texture to a manageable resolution while maintaining the aspect ratio.
+        """
+        h, w = texture.shape[:2]
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            texture = cv2.resize(
+                texture, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+            )
+        return texture
 
 
 class OBJ:
