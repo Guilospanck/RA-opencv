@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 # to consider the recognition valid
 MIN_MATCHES = 120
 # Only check for matches every some frames
-FRAME_SKIP = 1
+FRAME_SKIP = 2
 # Change this to the train image you want to find any match in the video stream
 TRAIN_IMAGE_RELATIVE_PATH = "references/software.jpg"
 # Change this to the .obj model you want to render on the matched image
@@ -54,10 +54,10 @@ args = parser.parse_args()
 
 def benchmark(func):
     def wrapper(*args, **kwargs):
-        start_time = time.time()
+        # start_time = time.time()
         result = func(*args, **kwargs)
-        end_time = time.time()
-        print(f"{func.__name__} execution time: {end_time - start_time:.6f} seconds")
+        # end_time = time.time()
+        # print(f"{func.__name__} execution time: {end_time - start_time:.6f} seconds")
         return result
 
     return wrapper
@@ -279,6 +279,8 @@ def render(
     scale_matrix,
     source_h,
     source_w,
+    is_cache_enabled,
+    cached_transformations,
 ):
     """
     Render a Wavefront object (.obj) into the current video frame with texture mapping.
@@ -314,27 +316,65 @@ def render(
 
     # Preprocess faces in parallel
     with ThreadPoolExecutor() as executor:
-        processed_faces = list(executor.map(preprocess_face, face_data_list))
+        # Check cache
+        if is_cache_enabled and cached_transformations["preprocess_face"]:
+            processed_faces = cached_transformations["preprocess_face"]
+        else:
+            processed_faces = list(executor.map(preprocess_face, face_data_list))
+            cached_transformations["preprocess_face"] = processed_faces
 
     # Combine all faces sequentially
-    for face_data in processed_faces:
+    for idx, face_data in enumerate(processed_faces):
         imgpts = face_data["imgpts"]
 
         if "texture" in face_data:
-            texture = face_data["texture"]
-            matrix = face_data["matrix"]
+            local_mask = None
+            warped_texture = None
+            x = None
+            y = None
+            w = None
+            h = None
 
-            # Create a local triangular mask
-            local_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+            if (
+                is_cache_enabled
+                and cached_transformations["texture_warping"][idx] is not None
+            ):
+                warped_texture = cached_transformations["texture_warping"][idx][
+                    "warped_texture"
+                ]
+                local_mask = cached_transformations["texture_warping"][idx][
+                    "local_mask"
+                ]
+                x = cached_transformations["texture_warping"][idx]["x"]
+                y = cached_transformations["texture_warping"][idx]["y"]
+                w = cached_transformations["texture_warping"][idx]["w"]
+                h = cached_transformations["texture_warping"][idx]["h"]
+            else:
+                texture = face_data["texture"]
+                matrix = face_data["matrix"]
 
-            # Warp texture and mask
-            warped_texture = cv2.warpAffine(
-                texture, matrix, (frame.shape[1], frame.shape[0])
-            )
-            cv2.fillConvexPoly(local_mask, imgpts[:3], 255)
+                # Create a local triangular mask
+                local_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
 
-            # Restrict operations to bounding box
-            x, y, w, h = cv2.boundingRect(imgpts)
+                # Warp texture and mask
+                warped_texture = cv2.warpAffine(
+                    texture, matrix, (frame.shape[1], frame.shape[0])
+                )
+                cv2.fillConvexPoly(local_mask, imgpts[:3], 255)
+
+                # Restrict operations to bounding box
+                x, y, w, h = cv2.boundingRect(imgpts)
+
+                # Save to cache
+                cached_transformations["texture_warping"][idx] = {
+                    "warped_texture": warped_texture,
+                    "local_mask": local_mask,
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                }
+
             frame[y : y + h, x : x + w] = cv2.copyTo(
                 warped_texture[y : y + h, x : x + w],
                 local_mask[y : y + h, x : x + w, None],
@@ -360,6 +400,14 @@ def getVideoCaptureSettingBasedOnPlatform():
     else:
         print(f"Unknown operating system: {system}")
         return None
+
+
+def significant_motion_detected(prev_homography, current_homography, threshold=1):
+    """
+    Check if the homography matrix has significantly changed.
+    """
+    norm = np.linalg.norm(prev_homography - current_homography)
+    return norm > threshold
 
 
 def run():
@@ -413,6 +461,10 @@ def run():
 
     prev_time = time.time()
     fps = 0
+
+    # Used to improve performance
+    prev_homography = None
+    cached_transformations = {"preprocess_face": [], "texture_warping": {}}
 
     while True:
         frame_count += 1
@@ -470,41 +522,52 @@ def run():
         if len(matches) > MIN_MATCHES:
             H = findHomography(source_kps, frame_kps, matches)
 
-            # draw rectangle if there is this arg
-            if args.rectangle:
-                drawRectangle(source, H, frame)
+            if H is None:
+                continue
 
-            # if a valid homography was found, render the cube on model plane
-            if H is not None:
-                try:
-                    # obtain the projection matrix
-                    P = projection_matrix(K, H)
-                    # project cube or model
-                    frame = render(
-                        frame=frame,
-                        obj=obj,
-                        projection=P,
-                        vertices=vertices,
-                        texcoords=texcoords,
-                        scale_matrix=scale_matrix,
-                        source_h=source_h,
-                        source_w=source_w,
-                    )
-                except Exception as e:
-                    print(e)
-                    pass
+            is_cache_enabled = (
+                prev_homography is not None
+                and not significant_motion_detected(prev_homography, H)
+            )
 
-            if args.matches:
-                # draw the first MIN_MATCHES
-                frame = cv2.drawMatches(
-                    source,
-                    source_kps,
-                    frame,
-                    frame_kps,
-                    matches[:MIN_MATCHES],
-                    None,
-                    flags=cv2.DRAW_MATCHES_FLAGS_NOT_DRAW_SINGLE_POINTS,
+            try:
+                # draw rectangle if there is this arg
+                if args.rectangle:
+                    drawRectangle(source, H, frame)
+
+                # obtain the projection matrix
+                P = projection_matrix(K, H)
+
+                # project cube or model
+                frame = render(
+                    frame=frame,
+                    obj=obj,
+                    projection=P,
+                    vertices=vertices,
+                    texcoords=texcoords,
+                    scale_matrix=scale_matrix,
+                    source_h=source_h,
+                    source_w=source_w,
+                    is_cache_enabled=is_cache_enabled,
+                    cached_transformations=cached_transformations,
                 )
+
+                if args.matches:
+                    # draw the first MIN_MATCHES
+                    frame = cv2.drawMatches(
+                        source,
+                        source_kps,
+                        frame,
+                        frame_kps,
+                        matches[:MIN_MATCHES],
+                        None,
+                        flags=cv2.DRAW_MATCHES_FLAGS_NOT_DRAW_SINGLE_POINTS,
+                    )
+
+                # update homography cache
+                prev_homography = H
+            except Exception as e:
+                print(f"ERROR WHILE TRUE: {e}")
 
             # show the results
             cv2.imshow("Frame", frame)
