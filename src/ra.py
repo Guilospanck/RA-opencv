@@ -26,6 +26,8 @@ MTL_MODEL_RELATIVE_PATH = "models/fox/fox.mtl"
 MODEL_OBJ_SCALE = 3
 # Moving average alpha used to calculate the FPS
 MOVING_AVG_ALPHA = 0.7
+# Index of the webcam to open when processing video
+WEBCAM_INDEX = 0
 
 # Command line argument parsing
 parser = argparse.ArgumentParser(description="Augmented Reality")
@@ -368,10 +370,12 @@ def run():
     dir_name = "\\".join(dir_name)
 
     # gets the train image
-    source = cv2.imread(os.path.join(dir_name, TRAIN_IMAGE_RELATIVE_PATH), 0)
+    source = cv2.imread(
+        os.path.join(dir_name, TRAIN_IMAGE_RELATIVE_PATH), cv2.IMREAD_GRAYSCALE
+    )
 
     # init video capture
-    cap = cv2.VideoCapture(0, getVideoCaptureSettingBasedOnPlatform())
+    cap = cv2.VideoCapture(WEBCAM_INDEX, getVideoCaptureSettingBasedOnPlatform())
     if not cap.isOpened():
         raise IOError("Cannot open webcam")
 
