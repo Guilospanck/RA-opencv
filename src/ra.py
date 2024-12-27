@@ -11,13 +11,15 @@ import argparse
 
 # Minimum number of matches that have to be found
 # to consider the recognition valid
-MIN_MATCHES = 60
+MIN_MATCHES = 120
 # Only check for matches every some frames
-FRAME_SKIP = 5
+FRAME_SKIP = 2
 # Change this to the train image you want to find any match in the video stream
 TRAIN_IMAGE_RELATIVE_PATH = "references/software.jpg"
 # Change this to the .obj model you want to render on the matched image
 OBJ_MODEL_RELATIVE_PATH = "models/fox/fox.obj"
+# Change this to the .mtl model you want to render on the matched image
+MTL_MODEL_RELATIVE_PATH = "models/fox/fox.mtl"
 # Change this to increase/decrease the scale of the rendered .obj
 MODEL_OBJ_SCALE = 3
 
@@ -70,16 +72,14 @@ def findHomography(src_keypoints, dst_keypoints, matches):
     return M
 
 
-def drawRectangle(source, src_kps, dst_kps, matches, destiny):
+def drawRectangle(source, homography, destiny):
     """
     Uses the shape of the train image, along with the Homography previously calculated, to 'send' the points
     from one plane (train image plane) to another (query image plane).
 
     Parameters:
     - @source: it is the train image, to retrieve its shape (height and width).
-    - @src_kps: Keypoints from the train image.
-    - @dst_kps: Keypoints from the destiny image.
-    - @matches: Matches found between the train and query images.
+    - @homography: homography matrix between source and query images.
     - @destiny: it is the query image, in which the rectangle is going to be drawn.
     """
 
@@ -89,11 +89,8 @@ def drawRectangle(source, src_kps, dst_kps, matches, destiny):
         -1, 1, 2
     )  # reshape(rows, cols, dimension)
 
-    # get Homography
-    M = findHomography(src_kps, dst_kps, matches)
-
     # project corners into the frame
-    dst = cv2.perspectiveTransform(pts, M)
+    dst = cv2.perspectiveTransform(pts, homography)
 
     # connect them with lines
     destiny = cv2.polylines(destiny, [np.int32(dst)], True, 255, 3, cv2.LINE_AA)
@@ -207,31 +204,68 @@ def hex_to_rgb(hex_color):
     )
 
 
-def render(img, obj, projection, model, color=False):
+def render(img, obj, projection, model):
     """
-    Render a simple Wavefront object (.obj) into the current video frame
+    Render a Wavefront object (.obj) into the current video frame with texture mapping.
+    Args:
+        img: The current video frame.
+        obj: The parsed OBJ file with vertices, faces, and materials.
+        projection: Projection matrix (3x4: intrinsic + extrinsic).
+        model: The reference (train) image.
+    Returns:
+        img: The rendered image with the object overlaid.
     """
 
-    vertices = obj.vertices
-    scale_matrix = np.eye(3) * MODEL_OBJ_SCALE  # allow us to scale the model
-    h, w = model.shape
+    # Obj vertices
+    vertices = np.array(obj.vertices, dtype=np.float32)
+    # Texture coordinates
+    texcoords = np.array(obj.texcoords, dtype=np.float32)
+    # Scaling matrix
+    scale_matrix = np.eye(3, dtype=np.float32) * MODEL_OBJ_SCALE
+    # Train image dimensions
+    h, w = model.shape[:2]
 
-    for face in obj.faces:
-        face_vertices = face[0]
-        points = np.array([vertices[vertex - 1] for vertex in face_vertices])
+    for face, tex_ids, _, material_name in obj.faces:
+        # 3D points for the current face
+        points = np.array([vertices[vertex] for vertex in face])
         points = np.dot(points, scale_matrix)
 
-        # render model in the middle of the reference surface. To do so, model points must be displaced.
+        # Center the model on the reference surface
         points = np.array([[p[0] + w / 2, p[1] + h / 2, p[2]] for p in points])
         dst = cv2.perspectiveTransform(points.reshape(-1, 1, 3), projection)
         imgpts = np.int32(dst)
 
-        if color is False:
-            cv2.fillConvexPoly(img, imgpts, (137, 27, 211))
+        # Get texture for the current material
+        texture = obj.mtl.materials[material_name].get("texture", None)
+
+        if texture is not None:
+            # Map texture coordinates to the face
+            uv = np.array([texcoords[tex_id] for tex_id in tex_ids], dtype=np.float32)
+            uv[:, 0] *= texture.shape[1]  # Scale U to texture width
+            uv[:, 1] *= texture.shape[0]  # Scale V to texture height
+
+            # Compute the affine transform matrix
+            src_pts = np.float32(uv[:3]).reshape(-1, 2)  # First 3 UV points
+            dst_pts = np.float32(imgpts[:3]).reshape(-1, 2)  # First 3 projected points
+
+            matrix = cv2.getAffineTransform(src_pts, dst_pts)
+
+            # Warp the texture onto the triangular face
+            warped_texture = cv2.warpAffine(
+                texture, matrix, (img.shape[1], img.shape[0])
+            )
+
+            # Create a mask for the triangular face
+            mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+            cv2.fillConvexPoly(mask, np.int32(dst_pts), 255)
+
+            # Overlay the texture onto the image
+            img = cv2.copyTo(warped_texture, mask[:, :, None], img)
+
         else:
-            color = hex_to_rgb(face[-1])
-            color = color[::-1]  # reverse
-            cv2.fillConvexPoly(img, imgpts, color)
+            # Render with solid color if no texture
+            color = obj.get_material_color(material_name)
+            cv2.fillConvexPoly(img, imgpts, color=[int(c * 255) for c in color])
 
     return img
 
@@ -268,7 +302,9 @@ def run():
     K = intrinsic_camera(fu=950, fv=950, u0=640, v0=360)
 
     # loads the 3d .obj model using the objoader_simple.py helper
-    obj = OBJ(os.path.join(dir_name, OBJ_MODEL_RELATIVE_PATH), swapyz=True)
+    obj_filename = os.path.join(dir_name, OBJ_MODEL_RELATIVE_PATH)
+    mtl_filename = os.path.join(dir_name, MTL_MODEL_RELATIVE_PATH)
+    obj = OBJ(obj_filename, mtl_filename, swapyz=True)
 
     # Initiate orb detector
     orb = cv2.ORB_create()
@@ -310,13 +346,15 @@ def run():
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
+        cv2.imshow("Frame", frame)
+
         # verify if enough matches are found. If yes, compute Homography
         if len(matches) > MIN_MATCHES:
             H = findHomography(source_kps, frame_kps, matches)
 
             # draw rectangle if there is this arg
             if args.rectangle:
-                drawRectangle(source, source_kps, frame_kps, matches, frame)
+                drawRectangle(source, H, frame)
 
             # if a valid homography was found, render the cube on model plane
             if H is not None:
@@ -324,8 +362,9 @@ def run():
                     # obtain the projection matrix
                     P = projection_matrix(K, H)
                     # project cube or model
-                    frame = render(frame, obj, P, source, False)
-                except Exception:
+                    frame = render(frame, obj, P, source)
+                except Exception as e:
+                    # print(e)
                     pass
 
             if args.matches:
