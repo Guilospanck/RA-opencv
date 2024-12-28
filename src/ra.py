@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 # to consider the recognition valid
 MIN_MATCHES = 120
 # Only check for matches every some frames
-FRAME_SKIP = 2
+FRAME_SKIP = 3
 # Change this to the train image you want to find any match in the video stream
 TRAIN_IMAGE_RELATIVE_PATH = "references/software.jpg"
 # Change this to the .obj model you want to render on the matched image
@@ -469,9 +469,13 @@ def run():
     prev_homography = None
     cached_transformations = {"preprocess_face": [], "texture_warping": {}}
 
+    old_frame = None
+
     while True:
         frame_count += 1
         if frame_count % FRAME_SKIP != 0:
+            if old_frame is not None:
+                cv2.imshow("Frame", old_frame)
             continue
 
         # read the current frame
@@ -516,6 +520,7 @@ def run():
         # Show the image even if no matches are found, otherwise we can't see
         # the video stream
         cv2.imshow("Frame", frame)
+        old_frame = frame
 
         # verify if enough matches are found. If yes, compute Homography
         if len(matches) > MIN_MATCHES:
@@ -576,6 +581,7 @@ def run():
 
             # show the results
             cv2.imshow("Frame", frame)
+            old_frame = frame
 
         else:
             print("Not enough matches found - %d/%d " % (len(matches), MIN_MATCHES))
