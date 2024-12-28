@@ -54,10 +54,10 @@ args = parser.parse_args()
 
 def benchmark(func):
     def wrapper(*args, **kwargs):
-        # start_time = time.time()
+        start_time = time.time()
         result = func(*args, **kwargs)
-        # end_time = time.time()
-        # print(f"{func.__name__} execution time: {end_time - start_time:.6f} seconds")
+        end_time = time.time()
+        print(f"{func.__name__} execution time: {end_time - start_time:.6f} seconds")
         return result
 
     return wrapper
@@ -92,7 +92,7 @@ def findHomography(src_keypoints, dst_keypoints, matches):
     ).reshape(-1, 1, 2)
 
     # compute Homography
-    M, _ = cv2.findHomography(src_pts, dst_points, cv2.RANSAC, 5.0)
+    M, _ = cv2.findHomography(src_pts, dst_points, cv2.RANSAC, 5.0, maxIters=2000)
 
     return M
 
@@ -506,10 +506,6 @@ def run():
         # match frame descriptors with source descriptors
         matches = bf.match(source_des, frame_des)
 
-        # sort them in the order of their distance
-        # the lower the distance, the better the match
-        matches = sorted(matches, key=lambda x: x.distance)
-
         # close
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
@@ -520,6 +516,12 @@ def run():
 
         # verify if enough matches are found. If yes, compute Homography
         if len(matches) > MIN_MATCHES:
+            # sort them in the order of their distance
+            # the lower the distance, the better the match
+            matches = sorted(matches, key=lambda x: x.distance)
+            # Only use a couple of matches (the best ones)
+            matches = matches[: (MIN_MATCHES // 2)]
+
             H = findHomography(source_kps, frame_kps, matches)
 
             if H is None:
