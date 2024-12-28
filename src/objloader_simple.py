@@ -41,6 +41,7 @@ class MTL:
                     elif values[0] == "map_Kd":  # Diffuse texture map
                         texture_path = os.path.join(base_path, values[1])
                         texture = cv2.imread(texture_path, cv2.IMREAD_COLOR)
+                        # resize texture image to speed up processing
                         resized_texture = self.preprocess_texture(texture)
                         self.materials[current_material]["texture"] = resized_texture
 

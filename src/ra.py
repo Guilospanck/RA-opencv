@@ -350,7 +350,7 @@ def render(
                 w = cached_transformations["texture_warping"][idx]["w"]
                 h = cached_transformations["texture_warping"][idx]["h"]
             else:
-                texture = face_data["texture"]
+                texture = face_data["texture"].astype(np.uint8)
                 matrix = face_data["matrix"]
 
                 # Create a local triangular mask
@@ -358,7 +358,10 @@ def render(
 
                 # Warp texture and mask
                 warped_texture = cv2.warpAffine(
-                    texture, matrix, (frame.shape[1], frame.shape[0])
+                    texture,
+                    matrix,
+                    (frame.shape[1], frame.shape[0]),
+                    flags=cv2.INTER_NEAREST,
                 )
                 cv2.fillConvexPoly(local_mask, imgpts[:3], 255)
 
