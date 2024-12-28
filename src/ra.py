@@ -26,8 +26,8 @@ MTL_MODEL_RELATIVE_PATH = "models/fox/fox.mtl"
 MODEL_OBJ_SCALE = 3
 # Moving average alpha used to calculate the FPS
 MOVING_AVG_ALPHA = 0.7
-# Index of the webcam to open when processing video
-WEBCAM_INDEX = 0
+# Index of the cam to open when processing video
+CAM_INDEX = 3
 
 # Command line argument parsing
 parser = argparse.ArgumentParser(description="Augmented Reality")
@@ -423,7 +423,7 @@ def run():
     )
 
     # init video capture
-    cap = cv2.VideoCapture(WEBCAM_INDEX, getVideoCaptureSettingBasedOnPlatform())
+    cap = cv2.VideoCapture(CAM_INDEX, getVideoCaptureSettingBasedOnPlatform())
     if not cap.isOpened():
         raise IOError("Cannot open webcam")
 
