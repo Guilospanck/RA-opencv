@@ -232,6 +232,7 @@ def preprocess_face(face_data):
         scale_matrix,
         source_h,
         source_w,
+        frame,
     ) = face_data
 
     # 3D points for the current face
@@ -261,11 +262,31 @@ def preprocess_face(face_data):
         dst_pts = np.float32(imgpts[:3]).reshape(-1, 2)  # First 3 projected points
         matrix = cv2.getAffineTransform(src_pts, dst_pts)
 
-        return {"imgpts": imgpts, "matrix": matrix, "texture": texture}
+        # Create a local triangular mask
+        local_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+
+        # Warp texture and mask
+        warped_texture = cv2.warpAffine(
+            texture,
+            matrix,
+            (frame.shape[1], frame.shape[0]),
+            flags=cv2.INTER_NEAREST,
+        )
+        cv2.fillConvexPoly(local_mask, imgpts[:3], 255)
+
+        # Restrict operations to bounding box
+        x, y, w, h = cv2.boundingRect(imgpts)
+
+        frame[y : y + h, x : x + w] = cv2.copyTo(
+            warped_texture[y : y + h, x : x + w],
+            local_mask[y : y + h, x : x + w, None],
+            frame[y : y + h, x : x + w],
+        )
+
     else:
         # Render with solid color
         color = obj.get_material_color(material_name)
-        return {"imgpts": imgpts, "color": [int(c * 255) for c in color]}
+        cv2.fillConvexPoly(frame, imgpts, color=color)
 
 
 @benchmark
@@ -310,6 +331,7 @@ def render(
             scale_matrix,
             source_h,
             source_w,
+            frame,
         )
         for face, tex_ids, _, material_name in obj.faces
     ]
@@ -317,77 +339,11 @@ def render(
     # Preprocess faces in parallel
     with ThreadPoolExecutor() as executor:
         # Check cache
-        if is_cache_enabled and cached_transformations["preprocess_face"]:
-            processed_faces = cached_transformations["preprocess_face"]
+        if is_cache_enabled and cached_transformations is not None:
+            pass
         else:
             processed_faces = list(executor.map(preprocess_face, face_data_list))
-            cached_transformations["preprocess_face"] = processed_faces
-
-    # Combine all faces sequentially
-    for idx, face_data in enumerate(processed_faces):
-        imgpts = face_data["imgpts"]
-
-        if "texture" in face_data:
-            local_mask = None
-            warped_texture = None
-            x = None
-            y = None
-            w = None
-            h = None
-
-            if (
-                is_cache_enabled
-                and cached_transformations["texture_warping"][idx] is not None
-            ):
-                warped_texture = cached_transformations["texture_warping"][idx][
-                    "warped_texture"
-                ]
-                local_mask = cached_transformations["texture_warping"][idx][
-                    "local_mask"
-                ]
-                x = cached_transformations["texture_warping"][idx]["x"]
-                y = cached_transformations["texture_warping"][idx]["y"]
-                w = cached_transformations["texture_warping"][idx]["w"]
-                h = cached_transformations["texture_warping"][idx]["h"]
-            else:
-                texture = face_data["texture"].astype(np.uint8)
-                matrix = face_data["matrix"]
-
-                # Create a local triangular mask
-                local_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
-
-                # Warp texture and mask
-                warped_texture = cv2.warpAffine(
-                    texture,
-                    matrix,
-                    (frame.shape[1], frame.shape[0]),
-                    flags=cv2.INTER_NEAREST,
-                )
-                cv2.fillConvexPoly(local_mask, imgpts[:3], 255)
-
-                # Restrict operations to bounding box
-                x, y, w, h = cv2.boundingRect(imgpts)
-
-                # Save to cache
-                cached_transformations["texture_warping"][idx] = {
-                    "warped_texture": warped_texture,
-                    "local_mask": local_mask,
-                    "x": x,
-                    "y": y,
-                    "w": w,
-                    "h": h,
-                }
-
-            frame[y : y + h, x : x + w] = cv2.copyTo(
-                warped_texture[y : y + h, x : x + w],
-                local_mask[y : y + h, x : x + w, None],
-                frame[y : y + h, x : x + w],
-            )
-
-        else:
-            # Render with solid color
-            color = face_data["color"]
-            cv2.fillConvexPoly(frame, imgpts, color=color)
+            cached_transformations = processed_faces
 
     return frame
 
@@ -467,7 +423,7 @@ def run():
 
     # Used to improve performance
     prev_homography = None
-    cached_transformations = {"preprocess_face": [], "texture_warping": {}}
+    cached_transformations = None
 
     old_frame = None
 
